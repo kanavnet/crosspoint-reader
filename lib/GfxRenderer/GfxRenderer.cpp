@@ -2001,6 +2001,16 @@ void GfxRenderer::tapToLogical(float nx, float ny, int& outX, int& outY) const {
       outY = phyY;
       break;
   }
+#if FREEINK_DEVICE_EEGO_A4
+  // Measured on hardware: contacts report below the point the finger aims at,
+  // by about 26 px near the top of the screen falling to about 10 px lower
+  // down, enough to tip a tap into the row beneath. Shift them back up.
+  const int screenH = (orientation == Portrait || orientation == PortraitInverted) ? panelWidth : panelHeight;
+  int bias = 30 - outY * 768 / (screenH * 25);
+  if (bias < 6) bias = 6;
+  if (bias > 26) bias = 26;
+  outY = outY > bias ? outY - bias : 0;
+#endif
 }
 
 // Translate a logical rect through rotateCoordinates and take the bounding
