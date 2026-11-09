@@ -149,6 +149,9 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   // The reader menu style stays available on button boards (the toolbar
   // chrome is button-navigable); only the touch controls are hidden.
   if (BoardConfig::hasTouch()) {
+    if (BoardConfig::isEegoA4() || BoardConfig::isX4Pro())
+      emit(SettingInfo::Toggle(StrId::STR_EDGE_LIGHT_SWIPES, &CrossPointSettings::edgeLightSwipes, "edgeLightSwipes",
+                               StrId::STR_CAT_CONTROLS));
     emit(SettingInfo::Toggle(StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
                              "touchReaderControls", StrId::STR_CAT_CONTROLS));
     emit(SettingInfo::Enum(StrId::STR_NEXT_PAGE_GESTURE, &CrossPointSettings::pageTurnGesture,

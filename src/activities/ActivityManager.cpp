@@ -5,6 +5,7 @@
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <HalDisplay.h>
+#include <HalFrontlight.h>
 #include <HalPowerManager.h>
 #include <Memory.h>
 #include <VectorFontSupport.h>
@@ -31,8 +32,10 @@
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsListActivity.h"
 #include "util/BmpViewerActivity.h"
+#include "util/EdgeSlide.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#include "util/SwipeAdjustment.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -102,6 +105,98 @@ void ActivityManager::renderTaskLoop() {
   }
 }
 
+namespace {
+// Edge slide (EEGO A4, X4 Pro): a vertical drag that starts and stays inside the left
+// screen-edge band adjusts brightness, inside the right band warmth. The value
+// follows the finger live; up raises, down lowers.
+struct EdgeLightSlide {
+  bool tracking = false;  // a contact is down
+  bool eligible = false;  // it started inside an edge band and has not left it
+  bool active = false;    // it travelled far enough to own the contact
+  bool left = false;
+  bool changed = false;
+  int startX = 0;
+  int startY = 0;
+  int initialValue = 0;
+};
+EdgeLightSlide edgeLightSlide;
+
+void finishEdgeLightSlide() {
+  if (edgeLightSlide.changed) {
+    SETTINGS.frontlightBrightness = Frontlight.brightness();
+    SETTINGS.frontlightWarmth = Frontlight.warmth();
+    SETTINGS.frontlightOn = Frontlight.isOn() ? 1 : 0;
+    SETTINGS.saveToFile();
+  }
+  edgeLightSlide.active = false;
+  edgeLightSlide.eligible = false;
+  edgeLightSlide.changed = false;
+}
+
+// Returns true when the slide owns this frame's touch input.
+bool handleEdgeLightSlide(const MappedInputManager& mappedInput, const GfxRenderer& renderer) {
+  auto& s = edgeLightSlide;
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const int band = EdgeSlide::bandWidth(width);
+  int x = 0;
+  int y = 0;
+  if (!mappedInput.isScreenTouchHeld(x, y)) {
+    const bool wasActive = s.active;
+    if (wasActive) {
+      mappedInput.suppressCurrentTouchContact();  // the lift is neither a tap nor a swipe
+      finishEdgeLightSlide();
+    }
+    s = {};
+    return wasActive;
+  }
+  if (!s.tracking) {
+    s = {};
+    s.tracking = true;
+    s.left = x < band;
+    s.eligible = s.left || x >= width - band;
+    s.startX = x;
+    s.startY = y;
+    return false;
+  }
+  if (!s.eligible) return false;
+  if (s.left ? x >= band : x < width - band) {
+    // Drifting inward ends the slide at its last applied value; the rest of
+    // the contact stays swallowed if the slide had already taken it.
+    const bool wasActive = s.active;
+    finishEdgeLightSlide();
+    if (wasActive) mappedInput.suppressCurrentTouchContact();
+    return wasActive;
+  }
+  const auto direction = EdgeSlide::directionFor(s.startX, s.startY, x, y, width, height);
+  if (!s.active) {
+    if (direction == EdgeSlide::Direction::None) return false;
+    if (!s.left && !Frontlight.hasColorTemperature()) {
+      s.eligible = false;
+      return false;
+    }
+    s.active = true;
+    s.initialValue = s.left ? Frontlight.brightness() : Frontlight.warmth();
+    haptic_feedback::touchAction();
+  }
+  const int dy = y - s.startY;
+  const int amount = SwipeAdjustment::amount(std::abs(dy), height);
+  const int target = SwipeAdjustment::targetValue(s.initialValue, dy < 0, amount);
+  if (s.left) {
+    const int brightness = std::max(1, target);
+    if (brightness != Frontlight.brightness() || (dy < 0 && amount > 0 && !Frontlight.isOn())) {
+      Frontlight.setBrightness(static_cast<uint8_t>(brightness));
+      if (dy < 0 && !Frontlight.isOn()) Frontlight.setOn(true);
+      s.changed = true;
+    }
+  } else if (target != Frontlight.warmth()) {
+    Frontlight.setWarmth(static_cast<uint8_t>(target));
+    s.changed = true;
+  }
+  return true;
+}
+}  // namespace
+
 void ActivityManager::loop() {
   if (mappedInput.consumeSuppressedRelease()) return;
 
@@ -117,6 +212,15 @@ void ActivityManager::loop() {
   }
 
   if (currentActivity) {
+    if ((BoardConfig::isEegoA4() || BoardConfig::isX4Pro()) && SETTINGS.edgeLightSwipes && Frontlight.present() && mappedInput.hasTouch() &&
+        currentActivity->name != "FrontlightPanel" && currentActivity->name != "Sleep" &&
+        currentActivity->name != "Boot") {
+      if (handleEdgeLightSlide(mappedInput, renderer)) return;
+    } else if (edgeLightSlide.tracking) {
+      finishEdgeLightSlide();
+      edgeLightSlide = {};
+    }
+
     if (!currentActivity->isHomeActivity() && mappedInput.wasHomeGesture()) {
       if (currentActivity->handleHomeGesture()) {
         return;
