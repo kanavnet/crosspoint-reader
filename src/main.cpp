@@ -690,6 +690,23 @@ void setup() {
   trustedtime::init();
   bleturner::begin(pageturner::host, SETTINGS.ble);
 
+#if FREEINK_DEVICE_EEGO_A4
+  // EEGO A4: waking mirrors sleeping. With Short Power Button Click = Sleep a
+  // click wakes too; otherwise both take a hold. Always Long Press to Wake
+  // keeps the click-to-sleep but demands a hold to wake, so a bump in a bag
+  // or pocket cannot. Checked before the light or display come up.
+  const bool a4ClickWakes =
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && SETTINGS.longPressWake == 0;
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !isSilentReboot && !a4ClickWakes) {
+    constexpr unsigned long A4_WAKE_HOLD_MS = 500;
+    if (!wakeHoldVerified || !gpio.powerButtonHeldUntil(A4_WAKE_HOLD_MS)) {
+      LOG_DBG("MAIN", "Power button released before the wake hold, sleeping");
+      Storage.prepareForDeepSleep();
+      powerManager.startDeepSleep(gpio);
+    }
+  }
+#endif
+
   // Brightness and warmth are always restored. A normal wake starts with the
   // light off unless Restore Light on Wake is enabled; silent maintenance
   // reboots replay the live state captured at restart, so they neither go dark
